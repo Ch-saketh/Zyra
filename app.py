@@ -40,10 +40,24 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 ARTIFACT_DIR = PROJECT_ROOT / "p10_production_artifacts"
 DB_PATH = PROJECT_ROOT / "zyra_recommendations.db"
 
-# Initialize Zyra V2 Engine once at module import
-logger.info("Initializing ZyraV2 engine from %s...", ARTIFACT_DIR)
-zyra = ZyraV2(artifact_dir=ARTIFACT_DIR)
-logger.info("ZyraV2 engine initialized successfully.")
+# Initialize Zyra Engine once at module import (V2 preferred, V1 lightweight fallback)
+force_v1 = os.environ.get("ZYRA_FORCE_V1", "0").lower() in ("1", "true", "yes")
+if force_v1:
+    logger.info("ZYRA_FORCE_V1 active: initializing lightweight ZyraV1 engine from %s...", ARTIFACT_DIR)
+    zyra = ZyraV1(artifact_dir=ARTIFACT_DIR)
+    logger.info("ZyraV1 lightweight engine initialized successfully.")
+else:
+    try:
+        logger.info("Initializing ZyraV2 engine from %s...", ARTIFACT_DIR)
+        zyra = ZyraV2(artifact_dir=ARTIFACT_DIR)
+        logger.info("ZyraV2 engine initialized successfully.")
+    except Exception as exc:
+        logger.warning(
+            "Failed to initialize heavy ZyraV2 engine (%s). Falling back to lightweight ZyraV1 engine...",
+            exc,
+        )
+        zyra = ZyraV1(artifact_dir=ARTIFACT_DIR)
+        logger.info("ZyraV1 fallback engine initialized successfully.")
 
 # Initialize Persistence Service once
 logger.info("Initializing RecommendationPersistenceService with %s...", DB_PATH)
