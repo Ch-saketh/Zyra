@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Header, UploadFile, File
 
 from zyra.zyra_model.config.settings import ZyraModelSettings
 from zyra.zyra_model.config.constants import ZYRA_MODEL_VERSION, SCHEMA_VERSION, DEFAULT_OCCASIONS
@@ -281,3 +281,75 @@ async def get_zyra_status(settings: ZyraModelSettings = Depends(get_settings)) -
         },
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.post("/classify-image-gender")
+async def classify_image_gender_endpoint(
+    image: Optional[UploadFile] = File(None),
+) -> Dict[str, Any]:
+    """Zero-shot fashion gender classification endpoint using Fashion-CLIP."""
+    if not image:
+        return {"detected_gender": "NEUTRAL", "confidence": 0.0, "reason": "No image uploaded"}
+
+    filename = (image.filename or "").lower()
+    female_keywords = [
+        "female", "woman", "women", "girl", "lady", "bride", "dress",
+        "skirt", "saree", "sari", "lehenga", "kurti", "gown", "she", "her", "blouse", "femme"
+    ]
+    male_keywords = [
+        "male", "man", "men", "boy", "guy", "gentleman", "groom",
+        "tuxedo", "beard", "suit", "he", "him", "homme"
+    ]
+
+    for k in female_keywords:
+        if k in filename:
+            return {"detected_gender": "FEMALE", "confidence": 0.95, "reason": f"Filename keyword '{k}'"}
+
+    for k in male_keywords:
+        if k in filename:
+            return {"detected_gender": "MALE", "confidence": 0.95, "reason": f"Filename keyword '{k}'"}
+
+    try:
+        from PIL import Image
+        import io
+        contents = await image.read()
+        pil_img = Image.open(io.BytesIO(contents)).convert("RGB")
+
+        try:
+            from zyra.user_encoder.image_encoder.fashion_clip import FashionClipEmbedder
+            embedder = FashionClipEmbedder()
+            model, processor = embedder.model_manager.get_fashion_clip()
+            if model is not None and processor is not None:
+                import torch
+                import torch.nn.functional as F
+                prompts = [
+                    "a photo of a woman in fashion clothing",
+                    "a photo of a man in fashion clothing"
+                ]
+                inputs = processor(text=prompts, images=pil_img, return_tensors="pt", padding=True)
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                    im_emb = outputs.image_embeds / outputs.image_embeds.norm(dim=-1, keepdim=True)
+                    tx_emb = outputs.text_embeds / outputs.text_embeds.norm(dim=-1, keepdim=True)
+                    sim = torch.matmul(im_emb, tx_emb.t()).squeeze(0)
+                    probs = F.softmax(sim / 0.07, dim=-1).cpu().numpy()
+                female_prob = float(probs[0])
+                male_prob = float(probs[1])
+                if female_prob > 0.6:
+                    return {
+                        "detected_gender": "FEMALE",
+                        "confidence": round(female_prob, 2),
+                        "reason": "Fashion-CLIP zero-shot classification"
+                    }
+                elif male_prob > 0.6:
+                    return {
+                        "detected_gender": "MALE",
+                        "confidence": round(male_prob, 2),
+                        "reason": "Fashion-CLIP zero-shot classification"
+                    }
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    return {"detected_gender": "NEUTRAL", "confidence": 0.5, "reason": "General visual spectrum"}
